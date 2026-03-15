@@ -1,5 +1,3 @@
-from email.mime import message
-
 import psutil
 import time
 import cpuinfo
@@ -202,14 +200,13 @@ def dynamic_func():
     speed = get_cpu_speed()
     process = get_process()
     threads, handles = get_threads_handles()
-    message = f"""
-Utilization: {utilization}
-Speed: {speed}
-Processes: {process}
-CPU Threads: {threads}
-Handles: {handles}
-"""
-    print(message)
+    return {
+        "Utilization": utilization,
+        "Speed": speed,
+        "Processes": process,
+        "CPU Threads": threads,
+        "Handles": handles
+    }
 
 def static_func():
     info = cpuinfo.get_cpu_info()
@@ -221,18 +218,16 @@ def static_func():
     cache = get_caches()
     is_virt, method = detect_virtualization()
 
-    message = f"""
-CPU: {cpu_name}
-Base Speed: {base_speed}
-Sockets: {sockets}
-Cores: {cores}
-Logical Cores: {logical_cores}
-Cache: {cache}
-Is Virtualized: {is_virt} ({method})
-"""
-
-    print(message)
+    return {
+        "CPU": cpu_name,
+        "Base Speed": base_speed,
+        "Sockets": sockets,
+        "Cores": cores,
+        "Logical Cores": logical_cores,
+        "Cache": cache,
+        "Is Virtualized": (is_virt, method)
+    }
 
 
-dynamic_func()
-static_func()
+print(dynamic_func())
+print(static_func())
