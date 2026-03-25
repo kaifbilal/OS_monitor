@@ -1,220 +1,352 @@
-import json
+import ctypes
 import os
-import re
-import subprocess
-import winreg
-
-import psutil
-import wmi
+import time
+from ctypes import wintypes
+from time import sleep
 
 
-def _get_wmi_client(wmi_client=None):
-    """Reuse a provided WMI client or create a new one."""
-    return wmi_client or wmi.WMI()
+GENERIC_READ = 0x80000000
+FILE_SHARE_READ = 0x00000001
+FILE_SHARE_WRITE = 0x00000002
+OPEN_EXISTING = 3
+FILE_ATTRIBUTE_NORMAL = 0x00000080
+INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
 
-def _ps_get_physical_disks():
-    try:
-        cmd = ['powershell', '-NoProfile',
-               '-Command',
-               "Get-PhysicalDisk | Select FriendlyName,MediaType,BusType,Size,DeviceId | ConvertTo-Json"]
-        out = subprocess.check_output(cmd, stderr=subprocess.DEVNULL, text=True)
-        data = json.loads(out)
-        if isinstance(data, dict):
-            data = [data]
-        # normalize keys
-        return {str(d.get("DeviceId")): d for d in data}
-    except Exception:
-        return {}
-
-def _human(bytes):
-    for unit in ['B','KB','MB','GB','TB']:
-        if abs(bytes) < 1024.0 or unit == 'TB':
-            return f"{bytes:3.2f} {unit}"
-        bytes /= 1024.0
-
-def _detect_pagefiles(wmi_client=None):
-    """Return set of drive letters that host a pagefile (e.g. {'C:', 'D:'})."""
-    c = _get_wmi_client(wmi_client)
-    pagefiles = set()
-
-    for cls in (c.Win32_PageFile, c.Win32_PageFileSetting):
-        try:
-            for pf in cls():
-                name = getattr(pf, "Name", "") or ""
-                match = re.search(r'([A-Za-z]):', name)
-                if match:
-                    pagefiles.add(match.group(1).upper() + ":")
-        except Exception:
-            continue
-
-    try:
-        key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
-                             r"SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management")
-        val, _ = winreg.QueryValueEx(key, "PagingFiles")
-        if isinstance(val, (list, tuple)):
-            for entry in val:
-                match = re.search(r'([A-Za-z]):', entry)
-                if match:
-                    pagefiles.add(match.group(1).upper() + ":")
-    except Exception:
-        pass
-
-    return pagefiles
+IOCTL_DISK_GET_LENGTH_INFO = 0x0007405C
+IOCTL_DISK_PERFORMANCE = 0x00070020
+IOCTL_STORAGE_QUERY_PROPERTY = 0x002D1400
 
 
-def get_disks_info(wmi_client=None):
-    """One-time static inventory of disks, partitions, and usage."""
-    c = _get_wmi_client(wmi_client)
-    ps_disks = _ps_get_physical_disks()
-    pagefiles = _detect_pagefiles(c)
-
-    # map disk -> partitions -> logical disks (letters)
-    disk_to_part = {}
-    for link in c.Win32_DiskDriveToDiskPartition():
-        try:
-            disk = link.Antecedent   # Win32_DiskDrive
-            part = link.Dependent    # Win32_DiskPartition
-            # parse DeviceID from antecedent string like '\\\\.\\PHYSICALDRIVE0'
-            disk_id = getattr(disk, "DeviceID", None)
-            part_name = getattr(part, "DeviceID", None)
-            if not disk_id or not part_name:
-                continue
-            disk_to_part.setdefault(disk_id, []).append(part_name)
-        except Exception:
-            continue
-
-    part_to_logical = {}
-    for link in c.Win32_LogicalDiskToPartition():
-        try:
-            part = link.Antecedent  # Win32_DiskPartition
-            ld = link.Dependent     # Win32_LogicalDisk
-            part_name = getattr(part, "DeviceID", None)
-            drive_letter = getattr(ld, "DeviceID", None)  # e.g. 'C:'
-            if part_name and drive_letter:
-                part_to_logical.setdefault(part_name, []).append(drive_letter)
-        except Exception:
-            continue
-
-    sys_drive = os.environ.get("SystemDrive", None)  # e.g. 'C:'
-
-    results = []
-    for d in c.Win32_DiskDrive():
-        dev_id = getattr(d, "DeviceID", None)   # \\.\PHYSICALDRIVE0
-        model = getattr(d, "Model", "") or ""
-        interface = getattr(d, "InterfaceType", "") or ""
-        pnp = getattr(d, "PNPDeviceID", "") or ""
-        media = getattr(d, "MediaType", "") or ""
-        size = int(getattr(d, "Size", 0) or 0)
-
-        # gather partitions -> letters
-        parts = disk_to_part.get(dev_id, [])
-        letters = []
-        for p in parts:
-            letters.extend(part_to_logical.get(p, []))
-        letters = sorted(set(letters))
-
-        # per-letter usage (choose first letter for capacity display)
-        disk_usage = None
-        usage_info = []
-        for L in letters:
-            try:
-                mount = L + os.sep  # e.g. 'C:\\'
-                du = psutil.disk_usage(mount)
-                usage_info.append({
-                    "letter": L,
-                    "total_bytes": du.total,
-                    "used_bytes": du.used,
-                    "free_bytes": du.free,
-                    "percent": du.percent,
-                    "total_human": _human(du.total),
-                    "used_human": _human(du.used),
-                    "free_human": _human(du.free)
-                })
-            except Exception:
-                continue
-        if usage_info:
-            # prefer system drive if present, else first
-            disk_usage = next((u for u in usage_info if u["letter"] == sys_drive), usage_info[0])
-
-        # type detection: prefer PowerShell Get-PhysicalDisk by DeviceId if available
-        ps_info = None
-        # DeviceId mapping: try to match by index in DeviceID name
-        if dev_id and dev_id.lower().startswith(r"\\.\physicaldrive"):
-            try:
-                idx = dev_id[len(r"\\.\physicaldrive"):].strip()
-                ps_info = ps_disks.get(str(int(idx)))
-            except Exception:
-                ps_info = None
-
-        media_type = None
-        bus_type = None
-        if ps_info:
-            media_type = ps_info.get("MediaType")
-            bus_type = ps_info.get("BusType")
-        else:
-            # fallback heuristics
-            if "ssd" in model.lower() or "nvme" in model.lower() or "ssd" in media.lower():
-                media_type = "SSD"
-            elif "hdd" in model.lower() or "hard disk" in media.lower():
-                media_type = "HDD"
-            if "nvme" in pnp.lower() or "nvme" in model.lower():
-                bus_type = "NVMe"
-            else:
-                bus_type = interface or None
-
-        is_system = any(L == sys_drive for L in letters) if sys_drive else False
-        is_pagefile = any(L in pagefiles for L in letters)
-
-        results.append({
-            "device_id": dev_id,
-            "model": model.strip(),
-            "interface": interface,
-            "pnp_device_id": pnp,
-            "media_field": media,
-            "size_bytes": size,
-            "size_human": _human(size),
-            "logical_letters": letters,
-            "usage": disk_usage,
-            "all_usages": usage_info,
-            "is_system_disk": is_system,
-            "is_pagefile_host": is_pagefile,
-            "media_type": media_type,
-            "bus_type": bus_type
-        })
-
-    return results
-
-def disk_perf_wmi(name="_Total", wmi_client=None):
-    """Dynamic metrics for a logical disk (C:, D:) or physical aggregate (_Total)."""
-    c = _get_wmi_client(wmi_client)
-    perf = c.Win32_PerfFormattedData_PerfDisk_LogicalDisk(Name=name)
-    if not perf:
-        return None
-
-    p = perf[0]
-    active_pct = float(getattr(p, "PercentDiskTime", 0))
-    avg_read_ms = float(getattr(p, "AvgDiskSecPerRead", 0)) * 1000
-    avg_write_ms = float(getattr(p, "AvgDiskSecPerWrite", 0)) * 1000
-    read_kb_s = int(getattr(p, "DiskReadBytesPerSec", 0)) / 1024
-    write_kb_s = int(getattr(p, "DiskWriteBytesPerSec", 0)) / 1024
-
-    reads = float(getattr(p, "DiskReadsPerSec", 0))
-    writes = float(getattr(p, "DiskWritesPerSec", 0))
-    combined_ms = None
-    if reads + writes > 0:
-        combined_ms = ((avg_read_ms * reads) + (avg_write_ms * writes)) / (reads + writes)
-
-    return {
-        "active_pct": active_pct,
-        "avg_read_ms": avg_read_ms,
-        "avg_write_ms": avg_write_ms,
-        "combined_avg_ms": combined_ms,
-        "read_kb_s": read_kb_s,
-        "write_kb_s": write_kb_s,
-        "reads_per_s": reads,
-        "writes_per_s": writes
-    }
+class STORAGE_PROPERTY_QUERY(ctypes.Structure):
+    _fields_ = [
+        ("PropertyId", wintypes.DWORD),
+        ("QueryType", wintypes.DWORD),
+        ("AdditionalParameters", wintypes.BYTE * 1),
+    ]
 
 
-# print(get_disks_info())
-print(disk_perf_wmi())
+class STORAGE_DESCRIPTOR_HEADER(ctypes.Structure):
+    _fields_ = [
+        ("Version", wintypes.DWORD),
+        ("Size", wintypes.DWORD),
+    ]
+
+
+class STORAGE_DEVICE_DESCRIPTOR(ctypes.Structure):
+    _fields_ = [
+        ("Version", wintypes.DWORD),
+        ("Size", wintypes.DWORD),
+        ("DeviceType", wintypes.BYTE),
+        ("DeviceTypeModifier", wintypes.BYTE),
+        ("RemovableMedia", wintypes.BOOLEAN),
+        ("CommandQueueing", wintypes.BOOLEAN),
+        ("VendorIdOffset", wintypes.DWORD),
+        ("ProductIdOffset", wintypes.DWORD),
+        ("ProductRevisionOffset", wintypes.DWORD),
+        ("SerialNumberOffset", wintypes.DWORD),
+        ("BusType", wintypes.BYTE),
+        ("RawPropertiesLength", wintypes.DWORD),
+    ]
+
+
+class DISK_PERFORMANCE(ctypes.Structure):
+    _fields_ = [
+        ("BytesRead", ctypes.c_longlong),
+        ("BytesWritten", ctypes.c_longlong),
+        ("ReadTime", ctypes.c_longlong),
+        ("WriteTime", ctypes.c_longlong),
+        ("IdleTime", ctypes.c_longlong),
+        ("ReadCount", wintypes.DWORD),
+        ("WriteCount", wintypes.DWORD),
+        ("QueueDepth", wintypes.DWORD),
+        ("SplitCount", wintypes.DWORD),
+        ("QueryTime", ctypes.c_longlong),
+        ("StorageDeviceNumber", wintypes.DWORD),
+        ("StorageManagerName", wintypes.WCHAR * 8),
+    ]
+
+
+class Disk:
+    def __init__(self):
+        self.kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        self._configure_apis()
+        self.system_root = self._get_system_drive_root()
+        self.volume_handle = self._open_system_volume()
+        self.max_transfer_mb_s = 0.0
+        self._last = self._read_perf_raw()
+
+    def _configure_apis(self):
+        self.kernel32.CreateFileW.restype = wintypes.HANDLE
+        self.kernel32.CreateFileW.argtypes = [
+            wintypes.LPCWSTR,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            wintypes.LPVOID,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            wintypes.HANDLE,
+        ]
+
+        self.kernel32.DeviceIoControl.restype = wintypes.BOOL
+        self.kernel32.DeviceIoControl.argtypes = [
+            wintypes.HANDLE,
+            wintypes.DWORD,
+            wintypes.LPVOID,
+            wintypes.DWORD,
+            wintypes.LPVOID,
+            wintypes.DWORD,
+            ctypes.POINTER(wintypes.DWORD),
+            wintypes.LPVOID,
+        ]
+
+        self.kernel32.GetDiskFreeSpaceExW.restype = wintypes.BOOL
+        self.kernel32.GetDiskFreeSpaceExW.argtypes = [
+            wintypes.LPCWSTR,
+            ctypes.POINTER(ctypes.c_ulonglong),
+            ctypes.POINTER(ctypes.c_ulonglong),
+            ctypes.POINTER(ctypes.c_ulonglong),
+        ]
+
+        self.kernel32.GetWindowsDirectoryW.restype = wintypes.UINT
+        self.kernel32.GetWindowsDirectoryW.argtypes = [wintypes.LPWSTR, wintypes.UINT]
+
+        self.kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        self.kernel32.CloseHandle.restype = wintypes.BOOL
+
+    def _get_system_drive_root(self):
+        buf = ctypes.create_unicode_buffer(260)
+        if self.kernel32.GetWindowsDirectoryW(buf, 260) == 0:
+            return "C:\\"
+        drive = os.path.splitdrive(buf.value)[0]
+        return drive + "\\" if drive else "C:\\"
+
+    def _open_system_volume(self):
+        volume = r"\\.\{}".format(self.system_root.rstrip("\\"))
+        handle = self.kernel32.CreateFileW(
+            volume,
+            0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            None,
+            OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL,
+            None,
+        )
+        if not handle or handle == INVALID_HANDLE_VALUE:
+            return None
+        return handle
+
+    def _human_bytes(self, value):
+        units = ["B", "KB", "MB", "GB", "TB"]
+        num = float(value)
+        for unit in units:
+            if num < 1024.0 or unit == units[-1]:
+                return f"{num:.2f} {unit}"
+            num /= 1024.0
+        return f"{num:.2f} TB"
+
+    def _read_formatted_size(self):
+        free_bytes = ctypes.c_ulonglong(0)
+        total_bytes = ctypes.c_ulonglong(0)
+        total_free = ctypes.c_ulonglong(0)
+        ok = self.kernel32.GetDiskFreeSpaceExW(
+            self.system_root,
+            ctypes.byref(free_bytes),
+            ctypes.byref(total_bytes),
+            ctypes.byref(total_free),
+        )
+        if not ok:
+            return None
+        return total_bytes.value
+
+    def _read_capacity(self):
+        if not self.volume_handle:
+            return self._read_formatted_size()
+        out_buf = ctypes.c_longlong(0)
+        returned = wintypes.DWORD(0)
+        ok = self.kernel32.DeviceIoControl(
+            self.volume_handle,
+            IOCTL_DISK_GET_LENGTH_INFO,
+            None,
+            0,
+            ctypes.byref(out_buf),
+            ctypes.sizeof(out_buf),
+            ctypes.byref(returned),
+            None,
+        )
+        if not ok:
+            return self._read_formatted_size()
+        return max(0, out_buf.value)
+
+    def _detect_drive_type(self):
+        if not self.volume_handle:
+            return "Unknown"
+
+        query = STORAGE_PROPERTY_QUERY()
+        query.PropertyId = 0
+        query.QueryType = 0
+        query.AdditionalParameters[0] = 0
+
+        header = STORAGE_DESCRIPTOR_HEADER()
+        returned = wintypes.DWORD(0)
+        ok = self.kernel32.DeviceIoControl(
+            self.volume_handle,
+            IOCTL_STORAGE_QUERY_PROPERTY,
+            ctypes.byref(query),
+            ctypes.sizeof(query),
+            ctypes.byref(header),
+            ctypes.sizeof(header),
+            ctypes.byref(returned),
+            None,
+        )
+        if not ok or header.Size == 0:
+            return "Unknown"
+
+        raw = ctypes.create_string_buffer(header.Size)
+        ok = self.kernel32.DeviceIoControl(
+            self.volume_handle,
+            IOCTL_STORAGE_QUERY_PROPERTY,
+            ctypes.byref(query),
+            ctypes.sizeof(query),
+            raw,
+            ctypes.sizeof(raw),
+            ctypes.byref(returned),
+            None,
+        )
+        if not ok:
+            return "Unknown"
+
+        desc = STORAGE_DEVICE_DESCRIPTOR.from_buffer_copy(raw)
+        bus_type = int(desc.BusType)
+
+        # STORAGE_BUS_TYPE enum values commonly used by Windows.
+        if bus_type == 17:
+            return "SSD(NVMe)"
+        if bus_type in (11, 12):
+            return "SSD"
+        if bus_type in (3, 8, 10):
+            return "HDD"
+
+        text = raw.raw.decode("latin-1", errors="ignore").lower()
+        if "nvme" in text:
+            return "SSD(NVMe)"
+        if "ssd" in text:
+            return "SSD"
+        if "hdd" in text or "sata" in text or "ata" in text:
+            return "HDD"
+        return "Unknown"
+
+    def _read_perf_raw(self):
+        if not self.volume_handle:
+            return None
+        perf = DISK_PERFORMANCE()
+        returned = wintypes.DWORD(0)
+        ok = self.kernel32.DeviceIoControl(
+            self.volume_handle,
+            IOCTL_DISK_PERFORMANCE,
+            None,
+            0,
+            ctypes.byref(perf),
+            ctypes.sizeof(perf),
+            ctypes.byref(returned),
+            None,
+        )
+        if not ok:
+            return None
+        return {
+            "t": time.perf_counter(),
+            "bytes_read": int(perf.BytesRead),
+            "bytes_written": int(perf.BytesWritten),
+            "read_time_100ns": int(perf.ReadTime),
+            "write_time_100ns": int(perf.WriteTime),
+            "idle_time_100ns": int(perf.IdleTime),
+            "reads": int(perf.ReadCount),
+            "writes": int(perf.WriteCount),
+        }
+
+    def get_disk_info(self):
+        capacity = self._read_capacity()
+        formatted = self._read_formatted_size()
+        drive_type = self._detect_drive_type()
+        return {
+            "capacity": self._human_bytes(capacity) if capacity is not None else "N/A",
+            "formatted": self._human_bytes(formatted) if formatted is not None else "N/A",
+            "system_disk": "Yes",
+            "type": drive_type,
+            "max_disk_transfer_rate": f"{self.max_transfer_mb_s:.2f} MB/s",
+        }
+
+    def get_loopback_info(self):
+        current = self._read_perf_raw()
+        if current is None or self._last is None:
+            self._last = current
+            return {
+                "active_time": "N/A",
+                "average_response_time": "N/A",
+                "read_speed": "0.00 KB/s",
+                "write_speed": "0.00 KB/s",
+                "disk_transfer_rate": "0.00 MB/s",
+            }
+
+        # When samples are too close in time, counters often look like zeros.
+        # Take one short delayed sample to produce stable rates.
+        dt = current["t"] - self._last["t"]
+        if dt < 0.25:
+            time.sleep(0.25)
+            current = self._read_perf_raw()
+            if current is None:
+                return {
+                    "active_time": "N/A",
+                    "average_response_time": "N/A",
+                    "read_speed": "0.00 KB/s",
+                    "write_speed": "0.00 KB/s",
+                    "disk_transfer_rate": "0.00 MB/s",
+                }
+
+        dt = current["t"] - self._last["t"]
+        if dt <= 0:
+            dt = 1e-6
+
+        rb = max(0, current["bytes_read"] - self._last["bytes_read"])
+        wb = max(0, current["bytes_written"] - self._last["bytes_written"])
+        rr = max(0, current["reads"] - self._last["reads"])
+        wr = max(0, current["writes"] - self._last["writes"])
+        rt = max(0, current["read_time_100ns"] - self._last["read_time_100ns"])
+        wt = max(0, current["write_time_100ns"] - self._last["write_time_100ns"])
+        idle = max(0, current["idle_time_100ns"] - self._last["idle_time_100ns"])
+
+        read_kb_s = rb / dt / 1024.0
+        write_kb_s = wb / dt / 1024.0
+        total_mb_s = (rb + wb) / dt / (1024.0 * 1024.0)
+        self.max_transfer_mb_s = max(self.max_transfer_mb_s, total_mb_s)
+
+        # IOCTL_DISK_PERFORMANCE times are in 100ns units.
+        total_ops = rr + wr
+        avg_ms = ((rt + wt) / total_ops / 10000.0) if total_ops > 0 else 0.0
+        active_pct = 100.0 - ((idle / dt) / 10_000_000.0 * 100.0)
+        active_pct = max(0.0, min(100.0, active_pct))
+
+        self._last = current
+        return {
+            "active_time": f"{active_pct:.2f}%",
+            "average_response_time": f"{avg_ms:.2f} ms",
+            "read_speed": f"{read_kb_s:.2f} KB/s",
+            "write_speed": f"{write_kb_s:.2f} KB/s",
+            "disk_transfer_rate": f"{total_mb_s:.2f} MB/s",
+        }
+
+    def close(self):
+        if self.volume_handle:
+            self.kernel32.CloseHandle(self.volume_handle)
+            self.volume_handle = None
+
+
+if __name__ == "__main__":
+    disk = Disk()
+    disk_info = disk.get_disk_info()
+    print("Disk Info:", disk_info)
+    for _ in range(5):
+        loopback_info = disk.get_loopback_info()
+        print("Loop Back Info:", loopback_info)
+        sleep(1)
+    # print max after sampling so the static section can be refreshed by caller
+    disk.close()

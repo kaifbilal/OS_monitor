@@ -208,18 +208,17 @@ class CPUInfo:
                     l3 += size
 
         logical_processors = self.popcount(logical_mask_union)
-
-        uptime_ms = self.GetTickCount64()
-        uptime_seconds = int(uptime_ms // 1000)
+        BaseSpeedGHz = self.base_speed()
 
         return {
-            'NumSockets': socket_count,
-            'NumCores': core_count,
-            'LogicalProcessors': logical_processors,
-            'L1CacheBytes': (l1//1024),
-            'L2CacheBytes': (l2//(1024)**2),
-            'L3CacheBytes': (l3//(1024)**2),
-            'UptimeSeconds': uptime_seconds,
+            "Base Speed": f"{BaseSpeedGHz}",# in GHz
+            'Sockets': f"{socket_count}",
+            'Cores': f"{core_count}",
+            'Logical Processors': f"{logical_processors}",
+            'L1 Cache': f"{l1//1024} ", # in KB
+            'L2 Cache': f"{l2//(1024**2)} ", # in MB
+            'L3 Cache': f"{l3//(1024**2)} ", # in MB
+            
             }
     
     def get_cpu_name_from_registry(self):
@@ -231,6 +230,10 @@ class CPUInfo:
         except OSError:
             return None
 
+    def get_uptime_seconds(self):
+        uptime_ms = self.GetTickCount64()
+        uptime_seconds = int(uptime_ms // 1000)
+        return uptime_seconds
     def base_speed(self):
     
         """
@@ -280,9 +283,9 @@ class CPUInfo:
             val = PDH_FMT_COUNTERVALUE()
             if self.PdhGetFormattedCounterValue(h, self.PDH_FMT_DOUBLE, None, ctypes.byref(val)) == 0:
                 if k == 'util':
-                    out['UtilizationPercent'] = round(val.doubleValue, 2)
+                    out['Utilization'] = round(val.doubleValue, 2)
                 elif k == 'freq':
-                    out['SpeedGHz'] = round(val.doubleValue / 1000.0, 3) if val.doubleValue > 0 else None
+                    out['Speed'] = round(val.doubleValue / 1000.0, 3) if val.doubleValue > 0 else None
                 elif k == 'proc':
                     out['Processes'] = int(round(val.doubleValue))
                 elif k == 'thread':
@@ -292,6 +295,7 @@ class CPUInfo:
         #------------------------------------------------------
 
         return out
+
     def loopclose(self):
         if hasattr(self, 'query') and self.query:
             self.PdhCloseQuery(self.query)
@@ -303,7 +307,6 @@ if __name__ == '__main__':
     print("Kernel32 CPU Info:\n")
     for k, v in info.items():
         print(f'{k}: {v}')
-    print("Base Speed", cpu_info.BaseSpeedGHz, "GHz")
     for _ in range(1):
         info = cpu_info.get_loopback_cpu_info()
         print("\n\nLoopback CPU Info:\n")

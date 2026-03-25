@@ -17,38 +17,17 @@ class Header():
 
         self.screen_name_label.pack(side=LEFT)
         self.screen_info_label.pack(side=RIGHT, padx=(10, 0))
-
-    def setup_cpu(self):
-        self.screen_name = "CPU"
-        self.screen_info = "Intel(R) Core(TM) i3-100"
+    
+    def update_info(self, name, info):
+        self.screen_name = name
+        self.screen_info = info
         self.screen_name_label.config(text=self.screen_name)
         self.screen_info_label.config(text=self.screen_info)
 
-    def setup_memory(self):
-        self.screen_name = "Memory"
-        self.screen_info = "16 GB"
-        self.screen_name_label.config(text=self.screen_name)
-        self.screen_info_label.config(text=self.screen_info)
-
-    def setup_disk(self):
-        self.screen_name = "Disk"
-        self.screen_info = "256 GB SSD"
-        self.screen_name_label.config(text=self.screen_name)
-        self.screen_info_label.config(text=self.screen_info)
-
-    def setup_gpu(self):
-        self.screen_name = "GPU"
-        self.screen_info = "NVIDIA GeForce GTX 1650"
-        self.screen_name_label.config(text=self.screen_name)
-        self.screen_info_label.config(text=self.screen_info)
 
 
 if __name__ == "__main__":
     root = Tk()
     root.configure(bg=BG)
     header = Header(root)
-    # header.setup_cpu()
-    # header.setup_memory()
-    # header.setup_disk()
-    header.setup_gpu()
     root.mainloop()
