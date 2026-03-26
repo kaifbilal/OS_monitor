@@ -278,9 +278,11 @@ class GPU:
         self._last_wmic_mem_ts = now
         return self._last_wmic_mem
 
+    def get_gpu_name(self):
+        return ("GPU", self._static_info["name"])
+
     def get_gpu_info(self):
         return {
-            "name": self._static_info["name"],
             "driver_version": self._static_info["driver_version"],
             "driver_date": self._static_info["driver_date"],
             "directx_version": self._static_info["directx_version"],
@@ -335,6 +337,7 @@ class GPU:
 
 if __name__ == "__main__":
     gpu = GPU()
+    print("GPU Name:", gpu.get_gpu_name())
     print("GPU Info:", gpu.get_gpu_info())
     for _ in range(1):
         print("GPU Looped Info:", gpu.get_gpu_looped_info())

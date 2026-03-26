@@ -10,8 +10,18 @@ class CPUPage(Frame):
                 self.header = Header(self)
                 self.chart = Chart(self)
                 self.footer = Footer(self)
-
+                self.chart.update_head("CPU Utilization", "100%")
                 self._stats_dictionary = {}
+
+        def _fmt_value(self, value, unit=""):
+                if value is None:
+                        return "N/A"
+                text = str(value).strip()
+                if not text:
+                        return "N/A"
+                if unit and ("%" not in text) and ("/" not in text) and text.replace(".", "", 1).isdigit():
+                        return f"{text} {unit}"
+                return text
 
         
         def set_stats(self, dictionary):
@@ -25,7 +35,7 @@ class CPUPage(Frame):
                                 "Processes": (f"{footer['Processes']}", "row2"),
                                 "Threads": (f"{footer['Threads']}", "row2"),
                                 "Handles": (f"{footer['Handles']}", "row2"),
-                                "Up Time": (f"{footer['UptimeSeconds']} Seconds", "row3"),
+                                "Up Time": (f"{self._format_elapsed(footer['UptimeSeconds'])}", "row3"),
                                 },
                         "footer_static":{
                                 "Base Speed": (f"{footer_static['Base Speed']}", "GHz"),
@@ -47,7 +57,27 @@ class CPUPage(Frame):
                 self.footer.setup_footer(dictionary["footer"])
                 for label, (value, unit) in dictionary["footer_static"].items():
                         self.footer._create_stat_row(self.footer.frm1, label, f"{value} {unit}")
-                
+
+        def update_stats(self, dictionary):
+                footer = dictionary or {}
+                dynamic = {
+                        "Utilization": self._fmt_value(footer.get("Utilization"), "%"),
+                        "Speed": self._fmt_value(footer.get("Speed"), "GHz"),
+                        "Processes": self._fmt_value(footer.get("Processes")),
+                        "Threads": self._fmt_value(footer.get("Threads")),
+                        "Handles": self._fmt_value(footer.get("Handles")),
+                        "Up Time": self._format_elapsed(footer.get("UptimeSeconds")),
+                }
+                self.footer.dynamic_value_setter(dynamic)
+                self.chart.plot_value(footer.get("Utilization"))
+        
+        
+        def _format_elapsed(self, seconds: float) -> str:
+                seconds = int(seconds)
+                hrs, rem = divmod(seconds, 3600)
+                mins, secs = divmod(rem, 60)
+                return f"{hrs:02d}:{mins:02d}:{secs:02d}"
+
 
 
 
@@ -59,9 +89,9 @@ if __name__ == "__main__":
         root.title("CPU Page")
         root.geometry("1024x600")
         root.configure(bg="#191919")
-        
+
         cpu_page = CPUPage(root)
         cpu_page.setup_static()
         cpu_page.pack(fill=BOTH, expand=True)
-        
+
         root.mainloop()

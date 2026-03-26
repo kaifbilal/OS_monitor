@@ -1,6 +1,6 @@
 from tkinter import *
-import random
 import math
+import re
 from collections import deque
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
@@ -45,8 +45,8 @@ class Chart:
         self.container.pack(fill=BOTH, expand=True)
         self.frm0 = Frame(self.container, bg=BG)
         self.frm0.pack(side=TOP, fill=X, padx=8, pady=(4, 0))
-        self.top_left = Label(self.frm0, text="% Utilization", bg=BG, fg=FG_DIM, font=("Segoe UI", 9))
-        self.top_right = Label(self.frm0, text="100%", bg=BG, fg=FG_DIM, font=("Segoe UI", 9))
+        self.top_left = Label(self.frm0, text="left top", bg=BG, fg=FG_DIM, font=("Segoe UI", 9))
+        self.top_right = Label(self.frm0, text="right top", bg=BG, fg=FG_DIM, font=("Segoe UI", 9))
         self.top_left.pack(side=LEFT)
         self.top_right.pack(side=TOP, anchor=E)
 
@@ -69,11 +69,10 @@ class Chart:
         self._pending_value = None
         self.container.bind("<Destroy>", self._on_destroy, add="+")
 
-        self.start()
-
     def _init_plot(self):
         self.fig = Figure(figsize=(7.4, 3.8), dpi=100)
-        self.fig.subplots_adjust(left=0, right=1, bottom=0, top=1)
+        # Keep a tiny inset so all spines (especially right/bottom) are visible.
+        self.fig.subplots_adjust(left=0.012, right=0.988, bottom=0.02, top=0.98)
         self.ax = self.fig.add_subplot(111)
         self.fig.patch.set_facecolor(CHART_FIG_BG)
         self.ax.set_facecolor(CHART_BG)
@@ -114,12 +113,32 @@ class Chart:
             value = self._pending_value
             self._pending_value = None
             return value
-        return random.uniform(0, 99)
+        return math.nan
 
     def set_latest_value(self, value):
         self._pending_value = value
 
+    def plot_value(self, value):
+        """Plot a single value immediately on the chart.
+
+        Call this from your updater function, e.g.:
+            chart.plot_value(new_value)
+        """
+        if self._closed:
+            return
+
+        safe_value = self.sanitize_value(value)
+        self._refresh_series(safe_value)
+        self.canvas.draw_idle()
+
     def sanitize_value(self, value):
+        # Accept values like "54.2%", "120 MB/s", "8.3 GB" and extract the number.
+        if isinstance(value, str):
+            match = re.search(r"[-+]?\d*\.?\d+", value.replace(",", ""))
+            if not match:
+                return math.nan
+            value = match.group(0)
+
         try:
             v = float(value)
         except (TypeError, ValueError):
@@ -162,10 +181,9 @@ class Chart:
             return
 
         raw = self.get_next_value()
-        value = self.sanitize_value(raw)
-        self._refresh_series(value)
-
-        self.canvas.draw_idle()
+        # Avoid injecting NaN points when no pending sample is provided.
+        if isinstance(raw, (int, float)) and math.isfinite(raw):
+            self.plot_value(raw)
         self._after_id = self.parent.after(UPDATE_MS, self.update_chart)
 
     def start(self):
@@ -185,9 +203,16 @@ class Chart:
             self._closed = True
             self.stop()
 
+    def update_head(self, valueleft, valueright):
+        self.top_left.config(text=valueleft)
+        self.top_right.config(text=valueright)
+        
 
 
 if __name__ == "__main__":
     root = Tk()
     app = Chart(root)
+    # for i in [23, 45, 56, 78, 12, 34, 67, 89, 90, 45, 50]:
+    #     app.plot_value(i)
+    #     sleep(2)
     root.mainloop()

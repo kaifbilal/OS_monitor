@@ -10,21 +10,33 @@ class GPUPage(Frame):
                 self.header = Header(self)
                 self.chart = Chart(self)
                 self.footer = Footer(self)
+                self.chart.update_head("GPU Utilization", "100%")
+                self._stats_dictionary = {}
 
-        def get_stats(self):
-                self._stats_dictionary = {"header": ("GPU", "NVIDIA GeForce RTX 2060"),
+        def _fmt_value(self, value):
+                if value is None:
+                        return "N/A"
+                text = str(value).strip()
+                return text if text else "N/A"
+
+        def set_stats(self, dictionary):
+                header = dictionary["header"]
+                footer = dictionary["footer"]
+                footer_static = dictionary["footer_static"]
+                self._stats_dictionary = {"header": header,
                 "footer": {
-                        "Utilization": ("%", "row1"),
-                        "Shared GPU memory": ("GB", "row1"),
-                        "GPU Memory": ("GB", "row2"),
+                        "Utilization": (f"{footer['gpu_utilization']}", "row1"),
+                        "Shared GPU memory": (f"{footer['shared_gpu_memory']}", "row1"),
+                        "GPU Memory": (f"{footer['total_gpu_memory']}", "row2"),
                         },
                 "footer_static":{
-                        "Driver version:": (f"31.0.101.2125", ""),
-                        "Driver date:": (f"24-05-2023", ""),
-                        "DirectX version:": (f"12 (FL 12.1)", ""),
-                        "Physical location:": (f"PCI bus 0 , device 1 , function 1 ", "")
+                        "Driver version:": (f"{footer_static['driver_version']}", ""),
+                        "Driver date:": (f"{footer_static['driver_date']}", ""),
+                        "DirectX version:": (f"{footer_static['directx_version']}", ""),
+                        "Physical location:": (f"{footer_static['physical_location']}", "")
                         },
                 }
+        def get_stats(self):
                 return self._stats_dictionary
 
         def setup_static(self):
@@ -34,6 +46,16 @@ class GPUPage(Frame):
                 self.footer.setup_footer(dictionary["footer"])
                 for label, (value, unit) in dictionary["footer_static"].items():
                         self.footer._create_stat_row(self.footer.frm1, label, f"{value} {unit}")
+
+        def update_stats(self, dictionary):
+                footer = dictionary or {}
+                dynamic = {
+                        "Utilization": self._fmt_value(footer.get("gpu_utilization")),
+                        "Shared GPU memory": self._fmt_value(footer.get("shared_gpu_memory")),
+                        "GPU Memory": self._fmt_value(footer.get("total_gpu_memory")),
+                }
+                self.footer.dynamic_value_setter(dynamic)
+                self.chart.plot_value(footer.get("gpu_utilization"))
 
 
 if __name__ == "__main__":

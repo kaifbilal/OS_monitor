@@ -344,9 +344,20 @@ if __name__ == "__main__":
     disk = Disk()
     disk_info = disk.get_disk_info()
     print("Disk Info:", disk_info)
-    for _ in range(5):
+    for _ in range(1):
         loopback_info = disk.get_loopback_info()
         print("Loop Back Info:", loopback_info)
         sleep(1)
     # print max after sampling so the static section can be refreshed by caller
     disk.close()
+
+
+# In Loop Info 
+# Read_speed not available
+# 
+# in Static Info
+# system disk is hard coded
+# 
+# and for header, the name of disk is not shown, like
+# FORESEE VP1000F512G
+# #

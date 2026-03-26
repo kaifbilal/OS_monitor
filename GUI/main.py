@@ -10,8 +10,9 @@ from GUI.page_wifi import WiFiPage
 
 
 class MainWindow(Tk):
-    def __init__(self):
+    def __init__(self, parent):
         super().__init__()
+        self.parent = parent
         self.title("OS Monitor")
         self.geometry("1024x640")
         self.configure(bg="#191919")
@@ -59,5 +60,5 @@ class MainWindow(Tk):
 
 if __name__ == "__main__":
 
-    root = MainWindow()
+    root = MainWindow(None)
     root.mainloop()

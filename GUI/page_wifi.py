@@ -10,21 +10,36 @@ class WiFiPage(Frame):
                 self.header = Header(self)
                 self.chart = Chart(self)
                 self.footer = Footer(self)
+                self.chart.update_head("WiFi Signal Strength", "0%")
+                self._stats_dictionary = {}
 
-        def get_stats(self):
-                self._stats_dictionary = {"header": ("Wi-Fi", "Intel(R) Wi-Fi 6 AX201 160MHz"),
+        def _fmt_value(self, value):
+                if value is None:
+                        return "N/A"
+                text = str(value).strip()
+                return text if text else "N/A"
+
+        def set_stats(self, dictionary):
+                header = dictionary["header"]
+                footer = dictionary["footer"]
+                footer_static = dictionary["footer_static"]
+                self._stats_dictionary = {"header": header,
                 "footer": {
-                        "Signal quality": ("%", "row1"),
-                        "Link speed": ("Mbps", "row1"),
-                        "Network band": ("GHz", "row2"),
-                        "Channel": ("", "row2"),
-                        "Physical type": ("", "row3"),
+                        "Signal quality": (f"{footer['signal_strength']}", "row1"),
+                        "Send speed": (f"{footer['send']}", "row1"),
+                        "Recieve speed": (f"{footer['receive']}", "row2"),
+                        "Throughput": (f"{footer['throughput']}", "row2"),
                         },
                 "footer_static":{
-                        "SSID:": (f"Kaif's Wi-Fi", ""),
-                        "Security type:": (f"WPA2-Personal", ""),
+                        "SSID:": (f"{footer_static['ssid']}", ""),
+                        # "Security type:": (f"{footer_static['security_type']}", ""),
+                        "Connection type:": (f"{footer_static['connection_type']}", ""),
+                        "IPv4 address:": (f"{footer_static['ipv4_address']}", ""),
+                        "IPv6 address:": (f"{footer_static['ipv6_address']}", ""),
+                        "Current speed": (f"{footer_static['current_internet_speed']}", " Mbps"),
                         },
                 }
+        def get_stats(self):
                 return self._stats_dictionary
         
         def setup_static(self):
@@ -34,6 +49,17 @@ class WiFiPage(Frame):
                 self.footer.setup_footer(dictionary["footer"])
                 for label, (value, unit) in dictionary["footer_static"].items():
                         self.footer._create_stat_row(self.footer.frm1, label, f"{value} {unit}")
+
+        def update_stats(self, dictionary):
+                footer = dictionary or {}
+                dynamic = {
+                        "Signal quality": self._fmt_value(footer.get("signal_strength")),
+                        "Send speed": self._fmt_value(footer.get("send")),
+                        "Recieve speed": self._fmt_value(footer.get("receive")),
+                        "Throughput": self._fmt_value(footer.get("throughput")),
+                }
+                self.footer.dynamic_value_setter(dynamic)
+                self.chart.plot_value(footer.get("throughput"))
 
 if __name__ == "__main__":
         root = Tk()

@@ -115,18 +115,11 @@ class Footer:
     def dynamic_value_setter(self, dictionary):
         """Takes input in the form of: dictionary, and create dynamic rows"""
         for key, value in dictionary.items():
-            self._element_dictionary[key][1].config(text=f"{value}") # Update the value label for the corresponding key
+            if key not in self._element_dictionary:
+                continue
+            self._element_dictionary[key][1].config(text=f"{value}")
 
-    def reset(self):
-        # Clear all stat labels and rows
 
-        # for widget in self.frm0.winfo_children():
-        #     widget.destroy()
-        # for widget in self.frm1.winfo_children():
-        #     widget.destroy()
-        self._element_dictionary = {} # Clear stored references to labels
-        self.container.destroy()
-        self.create_footer() # Recreate the footer structure after clearing
 
 if __name__ == "__main__":
     root = Tk()
